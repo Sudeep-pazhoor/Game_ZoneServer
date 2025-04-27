@@ -8,13 +8,13 @@ const router = express.Router();
 // Changed from '/games' to '/' so the full path is '/api/games'
 router.get('/', getAllGames);
 
-// Add a new game (protected route)
+// Add a new game 
 router.post('/', adminAuthMiddleware, addGame);
 
-// Edit a game (protected route)
+// Edit a game 
 router.put('/:id', adminAuthMiddleware, editGame);
 
-// Delete a game (protected route)
+// Delete a game
 router.delete('/:id', adminAuthMiddleware, deleteGame);
 
 module.exports = router;

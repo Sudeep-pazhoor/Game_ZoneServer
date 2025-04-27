@@ -2,7 +2,8 @@ const User = require('../models/userModel');
 const Game = require('../models/gameModel');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
 exports.register = async (req, res) => {
     try {
@@ -41,7 +42,7 @@ exports.getPaidGames = async (req, res) => {
             return res.status(401).json({ error: 'User not authenticated' });
         }
 
-        const user = await User.findById(req.userId).populate('paidGames', 'title image price');
+        const user = await User.findById(req.userId).populate('paidGames', 'title image price link');
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
@@ -79,7 +80,7 @@ exports.payForGame = async (req, res) => {
 
         if (!user.paidGames.some(id => id.toString() === gameId)) {
             user.paidGames.push(gameId);
-            user.lastPurchase = new Date(); // Explicitly set lastPurchase
+            user.lastPurchase = new Date();
             await user.save();
             console.log(`User ${user.username} paid for game ${gameId}`);
         }
@@ -90,36 +91,11 @@ exports.payForGame = async (req, res) => {
     }
 };
 
-exports.verifyPayment = async (req, res) => {
-    try {
-        const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
-        const user = await User.findById(req.userId);
-        const gameId = req.body.gameId;
-
-        const generatedSignature = crypto
-            .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-            .update(razorpay_order_id + '|' + razorpay_payment_id)
-            .digest('hex');
-
-        if (generatedSignature === razorpay_signature) {
-            if (!user.paidGames.some(id => id.toString() === gameId)) {
-                user.paidGames.push(gameId);
-                await user.save();
-            }
-            res.status(200).json({ message: 'Payment verified and game unlocked' });
-        } else {
-            res.status(400).json({ error: 'Payment verification failed' });
-        }
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-};
-
 exports.getPurchaseHistory = async (req, res) => {
     try {
         const users = await User.find()
-            .populate('paidGames', 'title price _id') // Include game _id
-            .select('username email paidGames lastPurchase updatedAt createdAt _id'); // Adds email
+            .populate('paidGames', 'title price _id')
+            .select('username email paidGames lastPurchase updatedAt createdAt _id');
 
         const purchaseHistory = [];
         users.forEach(user => {
@@ -128,11 +104,11 @@ exports.getPurchaseHistory = async (req, res) => {
                     userId: user._id,
                     gameId: game._id,
                     username: user.username,
-                    email: user.email, // Add email
+                    email: user.email,
                     gameTitle: game.title,
                     gameAmount: game.price,
                     purchaseTime: user.lastPurchase || user.updatedAt || user.createdAt || new Date(),
-      });
+                });
             });
         });
 
@@ -142,11 +118,9 @@ exports.getPurchaseHistory = async (req, res) => {
     }
 };
 
-
-
 exports.removePurchase = async (req, res) => {
     try {
-        const { userId, gameId } = req.body; // Expect userId and gameId in the request body
+        const { userId, gameId } = req.body;
         if (!userId || !gameId) {
             return res.status(400).json({ error: 'userId and gameId are required' });
         }
@@ -156,17 +130,93 @@ exports.removePurchase = async (req, res) => {
             return res.status(404).json({ error: 'User not found' });
         }
 
-        // Remove the gameId from paidGames if it exists
         const initialLength = user.paidGames.length;
         user.paidGames = user.paidGames.filter(id => id.toString() !== gameId);
         if (user.paidGames.length < initialLength) {
             await user.save();
             res.status(200).json({ message: 'Purchase removed successfully' });
         } else {
-            res.status(404).json({ error: 'Purchase not found for this user' });
+            return res.status(404).json({ error: 'Purchase not found for this user' });
         }
     } catch (error) {
         console.error('Remove purchase error:', error.message);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+};
+
+exports.uploadProfileImage = async (req, res) => {
+    try {
+        console.log('Upload attempt:', { file: req.file, userId: req.userId });
+        if (!req.file) {
+            console.log('No file received in uploadProfileImage');
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+
+        const user = await User.findById(req.userId);
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        user.profileImage = `/Uploads/${req.file.filename}`;
+        await user.save();
+
+        res.status(200).json({ message: 'Profile image uploaded successfully', profileImage: user.profileImage });
+    } catch (error) {
+        console.error('Upload profile image error:', error.message);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+};
+
+exports.deleteProfileImage = async (req, res) => {
+    try {
+        const user = await User.findById(req.userId);
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        if (!user.profileImage) {
+            return res.status(400).json({ error: 'No profile image to delete' });
+        }
+
+        const filePath = path.join(__dirname, '..', user.profileImage);
+        try {
+            if (fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath);
+                console.log(`Deleted file: ${filePath}`);
+            }
+        } catch (fileError) {
+            console.error('Error deleting file:', fileError.message);
+            // Continue with database update even if file deletion fails
+        }
+
+        user.profileImage = '';
+        await user.save();
+
+        res.status(200).json({ message: 'Profile image deleted successfully', profileImage: user.profileImage });
+    } catch (error) {
+        console.error('Delete profile image error:', error.message);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+};
+
+exports.getProfile = async (req, res) => {
+    try {
+        if (!req.userId) {
+            return res.status(401).json({ error: 'User not authenticated' });
+        }
+
+        const user = await User.findById(req.userId).select('username email profileImage');
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        res.status(200).json({
+            username: user.username,
+            email: user.email,
+            profileImage: user.profileImage || ''
+        });
+    } catch (error) {
+        console.error('Get profile error:', error.message);
         res.status(500).json({ error: 'Internal server error' });
     }
 };
